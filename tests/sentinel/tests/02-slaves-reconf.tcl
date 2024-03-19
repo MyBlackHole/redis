@@ -7,16 +7,15 @@
 
 source "../tests/includes/init-tests.tcl"
 
-proc 02_test_slaves_replication {} {
+proc 03_test_slaves_replication {} {
     uplevel 1 {
         test "Check that slaves replicate from current master" {
-            set master_port [RPort $master_id]
+            set master_port [RI $master_id tcp_port]
             foreach_redis_id id {
                 if {$id == $master_id} continue
                 if {[instance_is_killed redis $id]} continue
                 wait_for_condition 1000 50 {
-                    ([RI $id master_port] == $master_port) &&
-                    ([RI $id master_link_status] eq {up})
+                    [RI $id master_port] == $master_port
                 } else {
                     fail "Redis slave $id is replicating from wrong master"
                 }
@@ -25,10 +24,10 @@ proc 02_test_slaves_replication {} {
     }
 }
 
-proc 02_crash_and_failover {} {
+proc 03_crash_and_failover {} {
     uplevel 1 {
         test "Crash the master and force a failover" {
-            set old_port [RPort $master_id]
+            set old_port [RI $master_id tcp_port]
             set addr [S 0 SENTINEL GET-MASTER-ADDR-BY-NAME mymaster]
             assert {[lindex $addr 1] == $old_port}
             kill_instance redis $master_id
@@ -36,7 +35,7 @@ proc 02_crash_and_failover {} {
                 wait_for_condition 1000 50 {
                     [lindex [S $id SENTINEL GET-MASTER-ADDR-BY-NAME mymaster] 1] != $old_port
                 } else {
-                    fail "At least one Sentinel did not receive failover info"
+                    fail "At least one Sentinel did not received failover info"
                 }
             }
             restart_instance redis $master_id
@@ -46,16 +45,9 @@ proc 02_crash_and_failover {} {
     }
 }
 
-02_test_slaves_replication
-02_crash_and_failover
-
-foreach_sentinel_id id {
-    S $id sentinel debug info-period 100
-    S $id sentinel debug default-down-after 1000
-    S $id sentinel debug publish-period 100
-}
-
-02_test_slaves_replication
+03_test_slaves_replication
+03_crash_and_failover
+03_test_slaves_replication
 
 test "Kill a slave instance" {
     foreach_redis_id id {
@@ -66,8 +58,8 @@ test "Kill a slave instance" {
     }
 }
 
-02_crash_and_failover
-02_test_slaves_replication
+03_crash_and_failover
+03_test_slaves_replication
 
 test "Wait for failover to end" {
     set inprogress 1
@@ -88,4 +80,4 @@ test "Restart killed slave and test replication of slaves again..." {
 
 # Now we check if the slave rejoining the partition is reconfigured even
 # if the failover finished.
-02_test_slaves_replication
+03_test_slaves_replication

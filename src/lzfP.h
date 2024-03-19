@@ -40,7 +40,7 @@
 #define STANDALONE 1 /* at the moment, this is ok. */
 
 #ifndef STANDALONE
-# include "lzf.h"
+#include "lzf.h"
 #endif
 
 /*
@@ -49,10 +49,10 @@
  * the difference between 15 and 14 is very small
  * for small blocks (and 14 is usually a bit faster).
  * For a low-memory/faster configuration, use HLOG == 13;
- * For best compression, use 15 or 16 (or more, up to 22).
+ * For best compression, use 15 or 16 (or more, up to 23).
  */
 #ifndef HLOG
-# define HLOG 16
+#define HLOG 16
 #endif
 
 /*
@@ -61,7 +61,7 @@
  * (very roughly) 15% faster. This is the preferred mode of operation.
  */
 #ifndef VERY_FAST
-# define VERY_FAST 1
+#define VERY_FAST 1
 #endif
 
 /*
@@ -72,18 +72,14 @@
  * possibly disable this for text data.
  */
 #ifndef ULTRA_FAST
-# define ULTRA_FAST 0
+#define ULTRA_FAST 0
 #endif
 
 /*
  * Unconditionally aligning does not cost very much, so do it if unsure
  */
 #ifndef STRICT_ALIGN
-# if !(defined(__i386) || defined (__amd64))
-#  define STRICT_ALIGN 1
-# else
-#  define STRICT_ALIGN 0
-# endif
+#define STRICT_ALIGN !(defined(__i386) || defined(__amd64))
 #endif
 
 /*
@@ -92,16 +88,16 @@
  * deterministic/repeatable when the configuration otherwise is the same).
  */
 #ifndef INIT_HTAB
-# define INIT_HTAB 0
+#define INIT_HTAB 0
 #endif
 
 /*
  * Avoid assigning values to errno variable? for some embedding purposes
  * (linux kernel for example), this is necessary. NOTE: this breaks
- * the documentation in lzf.h. Avoiding errno has no speed impact.
+ * the documentation in lzf.h.
  */
 #ifndef AVOID_ERRNO
-# define AVOID_ERRNO 0
+#define AVOID_ERRNO 0
 #endif
 
 /*
@@ -110,7 +106,7 @@
  * NOTE: this breaks the prototype in lzf.h.
  */
 #ifndef LZF_STATE_ARG
-# define LZF_STATE_ARG 0
+#define LZF_STATE_ARG 0
 #endif
 
 /*
@@ -122,69 +118,41 @@
  * (<1% slowdown), but might slow down older cpus considerably.
  */
 #ifndef CHECK_INPUT
-# define CHECK_INPUT 1
+#define CHECK_INPUT 1
 #endif
-
-/*
- * Whether to store pointers or offsets inside the hash table. On
- * 64 bit architectures, pointers take up twice as much space,
- * and might also be slower. Default is to autodetect.
- * Notice: Don't set this value to 1, it will result in 'LZF_HSLOT'
- * not being able to store offset above UINT32_MAX in 64bit. */
-#define LZF_USE_OFFSETS 0
 
 /*****************************************************************************/
 /* nothing should be changed below */
 
-#ifdef __cplusplus
-# include <cstring>
-# include <climits>
-using namespace std;
-#else
-# include <string.h>
-# include <limits.h>
-#endif
-
-#ifndef LZF_USE_OFFSETS
-# if defined (WIN32)
-#  define LZF_USE_OFFSETS defined(_M_X64)
-# else
-#  if __cplusplus > 199711L
-#   include <cstdint>
-#  else
-#   include <stdint.h>
-#  endif
-#  define LZF_USE_OFFSETS (UINTPTR_MAX > 0xffffffffU)
-# endif
-#endif
-
 typedef unsigned char u8;
 
-#if LZF_USE_OFFSETS
-# define LZF_HSLOT_BIAS ((const u8 *)in_data)
-  typedef unsigned int LZF_HSLOT;
-#else
-# define LZF_HSLOT_BIAS 0
-  typedef const u8 *LZF_HSLOT;
-#endif
-
-typedef LZF_HSLOT LZF_STATE[1 << (HLOG)];
+typedef const u8 *LZF_STATE[1 << (HLOG)];
 
 #if !STRICT_ALIGN
 /* for unaligned accesses we need a 16 bit datatype. */
-# if USHRT_MAX == 65535
-    typedef unsigned short u16;
-# elif UINT_MAX == 65535
-    typedef unsigned int u16;
-# else
-#  undef STRICT_ALIGN
-#  define STRICT_ALIGN 1
-# endif
+#include <limits.h>
+#if USHRT_MAX == 65535
+typedef unsigned short u16;
+#elif UINT_MAX == 65535
+typedef unsigned int u16;
+#else
+#undef STRICT_ALIGN
+#define STRICT_ALIGN 1
+#endif
 #endif
 
 #if ULTRA_FAST
-# undef VERY_FAST
+#if defined(VERY_FAST)
+#undef VERY_FAST
+#endif
+#endif
+
+#if INIT_HTAB
+#ifdef __cplusplus
+#include <cstring>
+#else
+#include <string.h>
+#endif
 #endif
 
 #endif
-

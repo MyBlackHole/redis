@@ -5,6 +5,13 @@
  * tables of power of two in size are used, collisions are handled by
  * chaining. See the source code for more information... :)
  *
+ * 这个文件实现了一个内存哈希表，
+ * 它支持插入、删除、替换、查找和获取随机元素等操作。
+ *
+ * 哈希表会自动在表的大小的二次方之间进行调整。
+ *
+ * 键的冲突通过链表来解决。
+ *
  * Copyright (c) 2006-2012, Salvatore Sanfilippo <antirez at gmail dot com>
  * All rights reserved.
  *
@@ -33,224 +40,262 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdint.h>
+
 #ifndef __DICT_H
 #define __DICT_H
 
-#include "mt19937-64.h"
-#include <limits.h>
-#include <stdint.h>
-#include <stdlib.h>
-
+/*
+ * 字典的操作状态
+ */
+// 操作成功
 #define DICT_OK 0
+// 操作失败（或出错）
 #define DICT_ERR 1
 
-/* Hash table parameters */
-#define HASHTABLE_MIN_FILL        8      /* Minimal hash table fill 12.5%(100/8) */
+/* Unused arguments generate annoying warnings... */
+// 如果字典的私有数据不使用时
+// 用这个宏来避免编译器错误
+#define DICT_NOTUSED(V) ((void)V)
 
-typedef struct dictEntry dictEntry; /* opaque */
-typedef struct dict dict;
+/*
+ * 哈希表节点
+ */
+typedef struct dictEntry
+{
+    // 键
+    void *key;
 
-typedef struct dictType {
-    /* Callbacks */
-    uint64_t (*hashFunction)(const void *key);
-    void *(*keyDup)(dict *d, const void *key);
-    void *(*valDup)(dict *d, const void *obj);
-    int (*keyCompare)(dict *d, const void *key1, const void *key2);
-    void (*keyDestructor)(dict *d, void *key);
-    void (*valDestructor)(dict *d, void *obj);
-    int (*resizeAllowed)(size_t moreMem, double usedRatio);
-    /* Invoked at the start of dict initialization/rehashing (old and new ht are already created) */
-    void (*rehashingStarted)(dict *d);
-    /* Invoked at the end of dict initialization/rehashing of all the entries from old to new ht. Both ht still exists
-     * and are cleaned up after this callback.  */
-    void (*rehashingCompleted)(dict *d);
-    /* Allow a dict to carry extra caller-defined metadata. The
-     * extra memory is initialized to 0 when a dict is allocated. */
-    size_t (*dictMetadataBytes)(dict *d);
+    // 值
+    union
+    {
+        void *val;
+        uint64_t u64;
+        int64_t s64;
+    } v;
 
-    /* Data */
-    void *userdata;
+    // 指向下个哈希表节点，形成链表
+    struct dictEntry *next;
 
-    /* Flags */
-    /* The 'no_value' flag, if set, indicates that values are not used, i.e. the
-     * dict is a set. When this flag is set, it's not possible to access the
-     * value of a dictEntry and it's also impossible to use dictSetKey(). Entry
-     * metadata can also not be used. */
-    unsigned int no_value:1;
-    /* If no_value = 1 and all keys are odd (LSB=1), setting keys_are_odd = 1
-     * enables one more optimization: to store a key without an allocated
-     * dictEntry. */
-    unsigned int keys_are_odd:1;
-    /* TODO: Add a 'keys_are_even' flag and use a similar optimization if that
-     * flag is set. */
+} dictEntry;
+
+/*
+ * 字典类型特定函数
+ */
+typedef struct dictType
+{
+    // 计算哈希值的函数
+    unsigned int (*hashFunction)(const void *key);
+
+    // 复制键的函数
+    void *(*keyDup)(void *privdata, const void *key);
+
+    // 复制值的函数
+    void *(*valDup)(void *privdata, const void *obj);
+
+    // 对比键的函数
+    int (*keyCompare)(void *privdata, const void *key1, const void *key2);
+
+    // 销毁键的函数
+    void (*keyDestructor)(void *privdata, void *key);
+
+    // 销毁值的函数
+    void (*valDestructor)(void *privdata, void *obj);
+
 } dictType;
 
-#define DICTHT_SIZE(exp) ((exp) == -1 ? 0 : (unsigned long)1<<(exp))
-#define DICTHT_SIZE_MASK(exp) ((exp) == -1 ? 0 : (DICTHT_SIZE(exp))-1)
+/* This is our hash table structure. Every dictionary has two of this as we
+ * implement incremental rehashing, for the old to the new table. */
+/*
+ * 哈希表
+ *
+ * 每个字典都使用两个哈希表，从而实现渐进式 rehash 。
+ */
+typedef struct dictht
+{
+    // 哈希表数组
+    dictEntry **table;
 
-struct dict {
+    // 哈希表大小
+    unsigned long size;
+
+    // 哈希表大小掩码，用于计算索引值
+    // 总是等于 size - 1
+    unsigned long sizemask;
+
+    // 该哈希表已有节点的数量
+    unsigned long used;
+
+} dictht;
+
+/*
+ * 字典
+ */
+typedef struct dict
+{
+    // 类型特定函数
     dictType *type;
 
-    dictEntry **ht_table[2];
-    unsigned long ht_used[2];
+    // 私有数据
+    void *privdata;
 
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    // 哈希表
+    dictht ht[2];
 
-    /* Keep small vars at end for optimal (minimal) struct padding */
-    int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
-    signed char ht_size_exp[2]; /* exponent of size. (size = 1<<exp) */
-    int16_t pauseAutoResize;  /* If >0 automatic resizing is disallowed (<0 indicates coding error) */
-    void *metadata[];
-};
+    // rehash 索引
+    // 当 rehash 不在进行时，值为 -1
+    int rehashidx; /* rehashing not in progress if rehashidx == -1 */
+
+    // 目前正在运行的安全迭代器的数量
+    int iterators; /* number of iterators currently running */
+
+} dict;
 
 /* If safe is set to 1 this is a safe iterator, that means, you can call
  * dictAdd, dictFind, and other functions against the dictionary even while
  * iterating. Otherwise it is a non safe iterator, and only dictNext()
  * should be called while iterating. */
-typedef struct dictIterator {
+/*
+ * 字典迭代器
+ *
+ * 如果 safe 属性的值为 1 ，那么在迭代进行的过程中，
+ * 程序仍然可以执行 dictAdd 、 dictFind 和其他函数，对字典进行修改。
+ *
+ * 如果 safe 不为 1 ，那么程序只会调用 dictNext 对字典进行迭代，
+ * 而不对字典进行修改。
+ */
+typedef struct dictIterator
+{
+    // 被迭代的字典
     dict *d;
-    long index;
-    int table, safe;
+
+    // table ：正在被迭代的哈希表号码，值可以是 0 或 1 。
+    // index ：迭代器当前所指向的哈希表索引位置。
+    // safe ：标识这个迭代器是否安全
+    int table, index, safe;
+
+    // entry ：当前迭代到的节点的指针
+    // nextEntry ：当前迭代节点的下一个节点
+    //             因为在安全迭代器运作时， entry 所指向的节点可能会被修改，
+    //             所以需要一个额外的指针来保存下一节点的位置，
+    //             从而防止指针丢失
     dictEntry *entry, *nextEntry;
-    /* unsafe iterator fingerprint for misuse detection. */
-    unsigned long long fingerprint;
+
+    long long
+        fingerprint; /* unsafe iterator fingerprint for misuse detection */
 } dictIterator;
 
-typedef struct dictStats {
-    int htidx;
-    unsigned long buckets;
-    unsigned long maxChainLen;
-    unsigned long totalChainLen;
-    unsigned long htSize;
-    unsigned long htUsed;
-    unsigned long *clvector;
-} dictStats;
-
-typedef void (dictScanFunction)(void *privdata, const dictEntry *de);
-typedef void *(dictDefragAllocFunction)(void *ptr);
-typedef struct {
-    dictDefragAllocFunction *defragAlloc; /* Used for entries etc. */
-    dictDefragAllocFunction *defragKey;   /* Defrag-realloc keys (optional) */
-    dictDefragAllocFunction *defragVal;   /* Defrag-realloc values (optional) */
-} dictDefragFunctions;
+typedef void(dictScanFunction)(void *privdata, const dictEntry *de);
 
 /* This is the initial size of every hash table */
-#define DICT_HT_INITIAL_EXP      2
-#define DICT_HT_INITIAL_SIZE     (1<<(DICT_HT_INITIAL_EXP))
+/*
+ * 哈希表的初始大小
+ */
+#define DICT_HT_INITIAL_SIZE 4
 
 /* ------------------------------- Macros ------------------------------------*/
-#define dictFreeVal(d, entry) do {                     \
-    if ((d)->type->valDestructor)                      \
-        (d)->type->valDestructor((d), dictGetVal(entry)); \
-   } while(0)
+// 释放给定字典节点的值
+#define dictFreeVal(d, entry)     \
+    if ((d)->type->valDestructor) \
+    (d)->type->valDestructor((d)->privdata, (entry)->v.val)
 
-#define dictFreeKey(d, entry) \
+// 设置给定字典节点的值
+#define dictSetVal(d, entry, _val_)                                 \
+    do                                                              \
+    {                                                               \
+        if ((d)->type->valDup)                                      \
+            entry->v.val = (d)->type->valDup((d)->privdata, _val_); \
+        else                                                        \
+            entry->v.val = (_val_);                                 \
+    } while (0)
+
+// 将一个有符号整数设为节点的值
+#define dictSetSignedIntegerVal(entry, _val_) \
+    do                                        \
+    {                                         \
+        entry->v.s64 = _val_;                 \
+    } while (0)
+
+// 将一个无符号整数设为节点的值
+#define dictSetUnsignedIntegerVal(entry, _val_) \
+    do                                          \
+    {                                           \
+        entry->v.u64 = _val_;                   \
+    } while (0)
+
+// 释放给定字典节点的键
+#define dictFreeKey(d, entry)     \
     if ((d)->type->keyDestructor) \
-        (d)->type->keyDestructor((d), dictGetKey(entry))
+    (d)->type->keyDestructor((d)->privdata, (entry)->key)
 
-#define dictCompareKeys(d, key1, key2) \
-    (((d)->type->keyCompare) ? \
-        (d)->type->keyCompare((d), key1, key2) : \
-        (key1) == (key2))
+// 设置给定字典节点的键
+#define dictSetKey(d, entry, _key_)                               \
+    do                                                            \
+    {                                                             \
+        if ((d)->type->keyDup)                                    \
+            entry->key = (d)->type->keyDup((d)->privdata, _key_); \
+        else                                                      \
+            entry->key = (_key_);                                 \
+    } while (0)
 
-#define dictMetadata(d) (&(d)->metadata)
-#define dictMetadataSize(d) ((d)->type->dictMetadataBytes \
-                             ? (d)->type->dictMetadataBytes(d) : 0)
+// 比对两个键
+#define dictCompareKeys(d, key1, key2)                      \
+    (((d)->type->keyCompare)                                \
+         ? (d)->type->keyCompare((d)->privdata, key1, key2) \
+         : (key1) == (key2))
 
-#define dictHashKey(d, key) ((d)->type->hashFunction(key))
-#define dictBuckets(d) (DICTHT_SIZE((d)->ht_size_exp[0])+DICTHT_SIZE((d)->ht_size_exp[1]))
-#define dictSize(d) ((d)->ht_used[0]+(d)->ht_used[1])
-#define dictIsEmpty(d) ((d)->ht_used[0] == 0 && (d)->ht_used[1] == 0)
-#define dictIsRehashing(d) ((d)->rehashidx != -1)
-#define dictPauseRehashing(d) ((d)->pauserehash++)
-#define dictResumeRehashing(d) ((d)->pauserehash--)
-#define dictIsRehashingPaused(d) ((d)->pauserehash > 0)
-#define dictPauseAutoResize(d) ((d)->pauseAutoResize++)
-#define dictResumeAutoResize(d) ((d)->pauseAutoResize--)
-
-/* If our unsigned long type can store a 64 bit number, use a 64 bit PRNG. */
-#if ULONG_MAX >= 0xffffffffffffffff
-#define randomULong() ((unsigned long) genrand64_int64())
-#else
-#define randomULong() random()
-#endif
-
-typedef enum {
-    DICT_RESIZE_ENABLE,
-    DICT_RESIZE_AVOID,
-    DICT_RESIZE_FORBID,
-} dictResizeEnable;
+// 计算给定键的哈希值
+#define dictHashKey(d, key) (d)->type->hashFunction(key)
+// 返回获取给定节点的键
+#define dictGetKey(he) ((he)->key)
+// 返回获取给定节点的值
+#define dictGetVal(he) ((he)->v.val)
+// 返回获取给定节点的有符号整数值
+#define dictGetSignedIntegerVal(he) ((he)->v.s64)
+// 返回给定节点的无符号整数值
+#define dictGetUnsignedIntegerVal(he) ((he)->v.u64)
+// 返回给定字典的大小
+#define dictSlots(d) ((d)->ht[0].size + (d)->ht[1].size)
+// 返回字典的已有节点数量
+#define dictSize(d) ((d)->ht[0].used + (d)->ht[1].used)
+// 查看字典是否正在 rehash
+#define dictIsRehashing(ht) ((ht)->rehashidx != -1)
 
 /* API */
-dict *dictCreate(dictType *type);
+dict *dictCreate(dictType *type, void *privDataPtr);
 int dictExpand(dict *d, unsigned long size);
-int dictTryExpand(dict *d, unsigned long size);
-int dictShrink(dict *d, unsigned long size);
 int dictAdd(dict *d, void *key, void *val);
-dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing);
-void *dictFindPositionForInsert(dict *d, const void *key, dictEntry **existing);
-dictEntry *dictInsertAtPosition(dict *d, void *key, void *position);
-dictEntry *dictAddOrFind(dict *d, void *key);
+dictEntry *dictAddRaw(dict *d, void *key);
 int dictReplace(dict *d, void *key, void *val);
+dictEntry *dictReplaceRaw(dict *d, void *key);
 int dictDelete(dict *d, const void *key);
-dictEntry *dictUnlink(dict *d, const void *key);
-void dictFreeUnlinkedEntry(dict *d, dictEntry *he);
-dictEntry *dictTwoPhaseUnlinkFind(dict *d, const void *key, dictEntry ***plink, int *table_index);
-void dictTwoPhaseUnlinkFree(dict *d, dictEntry *he, dictEntry **plink, int table_index);
+int dictDeleteNoFree(dict *d, const void *key);
 void dictRelease(dict *d);
-dictEntry * dictFind(dict *d, const void *key);
+dictEntry *dictFind(dict *d, const void *key);
 void *dictFetchValue(dict *d, const void *key);
-int dictShrinkIfNeeded(dict *d);
-int dictExpandIfNeeded(dict *d);
-void dictSetKey(dict *d, dictEntry* de, void *key);
-void dictSetVal(dict *d, dictEntry *de, void *val);
-void dictSetSignedIntegerVal(dictEntry *de, int64_t val);
-void dictSetUnsignedIntegerVal(dictEntry *de, uint64_t val);
-void dictSetDoubleVal(dictEntry *de, double val);
-int64_t dictIncrSignedIntegerVal(dictEntry *de, int64_t val);
-uint64_t dictIncrUnsignedIntegerVal(dictEntry *de, uint64_t val);
-double dictIncrDoubleVal(dictEntry *de, double val);
-void *dictEntryMetadata(dictEntry *de);
-void *dictGetKey(const dictEntry *de);
-void *dictGetVal(const dictEntry *de);
-int64_t dictGetSignedIntegerVal(const dictEntry *de);
-uint64_t dictGetUnsignedIntegerVal(const dictEntry *de);
-double dictGetDoubleVal(const dictEntry *de);
-double *dictGetDoubleValPtr(dictEntry *de);
-size_t dictMemUsage(const dict *d);
-size_t dictEntryMemUsage(void);
+int dictResize(dict *d);
 dictIterator *dictGetIterator(dict *d);
 dictIterator *dictGetSafeIterator(dict *d);
-void dictInitIterator(dictIterator *iter, dict *d);
-void dictInitSafeIterator(dictIterator *iter, dict *d);
-void dictResetIterator(dictIterator *iter);
 dictEntry *dictNext(dictIterator *iter);
 void dictReleaseIterator(dictIterator *iter);
 dictEntry *dictGetRandomKey(dict *d);
-dictEntry *dictGetFairRandomKey(dict *d);
-unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count);
-void dictGetStats(char *buf, size_t bufsize, dict *d, int full);
-uint64_t dictGenHashFunction(const void *key, size_t len);
-uint64_t dictGenCaseHashFunction(const unsigned char *buf, size_t len);
-void dictEmpty(dict *d, void(callback)(dict*));
-void dictSetResizeEnabled(dictResizeEnable enable);
+int dictGetRandomKeys(dict *d, dictEntry **des, int count);
+void dictPrintStats(dict *d);
+unsigned int dictGenHashFunction(const void *key, int len);
+unsigned int dictGenCaseHashFunction(const unsigned char *buf, int len);
+void dictEmpty(dict *d, void(callback)(void *));
+void dictEnableResize(void);
+void dictDisableResize(void);
 int dictRehash(dict *d, int n);
-int dictRehashMicroseconds(dict *d, uint64_t us);
-void dictSetHashFunctionSeed(uint8_t *seed);
-uint8_t *dictGetHashFunctionSeed(void);
-unsigned long dictScan(dict *d, unsigned long v, dictScanFunction *fn, void *privdata);
-unsigned long dictScanDefrag(dict *d, unsigned long v, dictScanFunction *fn, dictDefragFunctions *defragfns, void *privdata);
-uint64_t dictGetHash(dict *d, const void *key);
-dictEntry *dictFindEntryByPtrAndHash(dict *d, const void *oldptr, uint64_t hash);
-void dictRehashingInfo(dict *d, unsigned long long *from_size, unsigned long long *to_size);
+int dictRehashMilliseconds(dict *d, int ms);
+void dictSetHashFunctionSeed(unsigned int initval);
+unsigned int dictGetHashFunctionSeed(void);
+unsigned long dictScan(dict *d, unsigned long v, dictScanFunction *fn,
+                       void *privdata);
 
-size_t dictGetStatsMsg(char *buf, size_t bufsize, dictStats *stats, int full);
-dictStats* dictGetStatsHt(dict *d, int htidx, int full);
-void dictCombineStats(dictStats *from, dictStats *into);
-void dictFreeStats(dictStats *stats);
-
-#ifdef REDIS_TEST
-int dictTest(int argc, char *argv[], int flags);
-#endif
+/* Hash table types */
+extern dictType dictTypeHeapStringCopyKey;
+extern dictType dictTypeHeapStrings;
+extern dictType dictTypeHeapStringCopyKeyValue;
 
 #endif /* __DICT_H */

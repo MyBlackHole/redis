@@ -33,8 +33,9 @@
 #ifndef __ENDIANCONV_H
 #define __ENDIANCONV_H
 
-#include "config.h"
 #include <stdint.h>
+
+#include "config.h"
 
 void memrev16(void *p);
 void memrev32(void *p);
@@ -43,12 +44,12 @@ uint16_t intrev16(uint16_t v);
 uint32_t intrev32(uint32_t v);
 uint64_t intrev64(uint64_t v);
 
-/* variants of the function doing the actual conversion only if the target
+/* variants of the function doing the actual convertion only if the target
  * host is big endian */
 #if (BYTE_ORDER == LITTLE_ENDIAN)
-#define memrev16ifbe(p) ((void)(0))
-#define memrev32ifbe(p) ((void)(0))
-#define memrev64ifbe(p) ((void)(0))
+#define memrev16ifbe(p)
+#define memrev32ifbe(p)
+#define memrev64ifbe(p)
 #define intrev16ifbe(v) (v)
 #define intrev32ifbe(v) (v)
 #define intrev64ifbe(v) (v)
@@ -69,10 +70,6 @@ uint64_t intrev64(uint64_t v);
 #else
 #define htonu64(v) intrev64(v)
 #define ntohu64(v) intrev64(v)
-#endif
-
-#ifdef REDIS_TEST
-int endianconvTest(int argc, char *argv[], int flags);
 #endif
 
 #endif
